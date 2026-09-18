@@ -1,4 +1,7 @@
 import { useState, useEffect } from "react";
+import type { CustomerFeatureMap, ReliabilityLevel } from "../services/api";
+import { usePrototypeFrieScore, type PrototypeFrieScoreState } from "../hooks/usePrototypeFrieScore";
+import { listDevSampleRecords, type DevSampleMeta, type FrieIndicators } from "../services/devSampleFeatures";
 import {
   Activity, AlertCircle, AlertTriangle, ArrowDown, ArrowUp,
   BarChart2, Bell, Briefcase, Building2, Check,
@@ -23,7 +26,7 @@ type View =
   | "dashboard" | "score" | "documents" | "analysis"
   | "recommendations" | "history" | "customers" | "customer-detail"
   | "reports" | "settings" | "notifications" | "profile"
-  | "applications" | "risk";
+  | "applications" | "risk" | "select-customer";
 
 interface AuthUser { email: string; role: Role; name: string }
 
@@ -48,10 +51,12 @@ interface Customer {
 // ═══════════════════════════════════════════════════════════════
 
 const DEMO_ACCOUNTS: Record<string, { password: string; role: Role; name: string }> = {
-  "individual@frie.demo": { password: "FRIE123", role: "individual", name: "Priya Sharma" },
-  "bank@frie.demo":       { password: "FRIE123", role: "bank",       name: "HDFC Bank" },
-  "nbfc@frie.demo":       { password: "FRIE123", role: "nbfc",       name: "Bajaj Finance" },
-  "insurance@frie.demo":  { password: "FRIE123", role: "insurance",  name: "LIC India" },
+  "individual@frie.demo": { password: "FRIE123", role: "individual", name: "Prototype Customer" },
+};
+
+const DEMO_COMPONENTS: CustomerComponents = {
+  incomeStability: 85, creditBehaviour: 80, savingsDiscipline: 88, paymentDiscipline: 90,
+  debtBurden: 72, financialResilience: 78, insuranceProtection: 65, investmentBehaviour: 80,
 };
 
 const DEMO_CUSTOMERS: Customer[] = [
@@ -61,7 +66,7 @@ const DEMO_CUSTOMERS: Customer[] = [
     monthlyIncome: 95000, monthlyExpenses: 45000, savings: 50000,
     existingDebt: 1200000, emi: 18000, creditScore: 748,
     savingsRate: 52.6, debtToIncome: 1.05, riskLevel: "Low",
-    components: { incomeStability: 85, creditBehaviour: 80, savingsDiscipline: 88, paymentDiscipline: 90, debtBurden: 72, financialResilience: 78, insuranceProtection: 65, investmentBehaviour: 80 },
+    components: DEMO_COMPONENTS,
   },
   {
     id: "C002", name: "Rahul Mehta", email: "rahul.mehta@example.com", age: 41, occupation: "Sales Manager",
@@ -87,19 +92,13 @@ const SCORE_HISTORY = [
   { month: "Jun", score: 81 }, { month: "Jul", score: 82 },
 ];
 
-const MONTHLY_CHART_DATA = [
-  { name: "Income",   value: 95, fill: "#10B981" },
-  { name: "Expenses", value: 45, fill: "#EF4444" },
-  { name: "Savings",  value: 32, fill: "#3B82F6" },
-  { name: "EMI",      value: 18, fill: "#F59E0B" },
-];
-
 const VIEW_TITLES: Partial<Record<View, string>> = {
   dashboard: "Dashboard", score: "FRIE Score & Report", documents: "Document Upload",
   analysis: "Financial Analysis", recommendations: "Recommendations", history: "History",
   customers: "Customers", "customer-detail": "Customer Profile", reports: "Reports",
   settings: "Settings", notifications: "Notifications", profile: "My Profile",
   applications: "Loan Applications", risk: "Risk Indicators",
+  "select-customer": "Select Prototype Customer",
 };
 
 // ═══════════════════════════════════════════════════════════════
@@ -124,6 +123,18 @@ function scoreBadgeCls(s: number) {
   if (s >= 55) return "bg-amber-50 text-amber-700 border-amber-100";
   return "bg-red-50 text-red-700 border-red-100";
 }
+function reliabilityColor(level: ReliabilityLevel) {
+  if (level === "Excellent") return "#10B981";
+  if (level === "Good") return "#3B82F6";
+  if (level === "Average") return "#F59E0B";
+  return "#EF4444";
+}
+function reliabilityBadgeCls(level: ReliabilityLevel) {
+  if (level === "Excellent") return "bg-emerald-50 text-emerald-700 border-emerald-100";
+  if (level === "Good") return "bg-blue-50 text-blue-700 border-blue-100";
+  if (level === "Average") return "bg-amber-50 text-amber-700 border-amber-100";
+  return "bg-red-50 text-red-700 border-red-100";
+}
 function riskBadgeCls(r: string) {
   if (r === "Low")    return "bg-emerald-50 text-emerald-700 border-emerald-100";
   if (r === "Medium") return "bg-amber-50 text-amber-700 border-amber-100";
@@ -136,18 +147,46 @@ function fmt(n: number) {
   return `₹${n}`;
 }
 
+function featureNumber(features: CustomerFeatureMap | null, key: string): number | null {
+  if (!features) return null;
+  const value = features[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function fmtFeature(features: CustomerFeatureMap | null, key: string): string {
+  const value = featureNumber(features, key);
+  return value === null ? "—" : fmt(value);
+}
+
+function pctFeature(features: CustomerFeatureMap | null, key: string, digits = 1): string {
+  const value = featureNumber(features, key);
+  return value === null ? "—" : `${(value * 100).toFixed(digits)}%`;
+}
+
+function yearsFeature(features: CustomerFeatureMap | null, key: string): string {
+  const value = featureNumber(features, key);
+  return value === null ? "—" : `${value.toFixed(1)} yrs`;
+}
+
+function decimalFeature(features: CustomerFeatureMap | null, key: string, digits = 2): string {
+  const value = featureNumber(features, key);
+  return value === null ? "—" : value.toFixed(digits);
+}
+
+const ILLUSTRATIVE_DEMO = "(illustrative demo)";
+
 // ═══════════════════════════════════════════════════════════════
 // SMALL SHARED COMPONENTS
 // ═══════════════════════════════════════════════════════════════
 
-function ScoreGauge({ score, size = 200 }: { score: number; size?: number }) {
+function ScoreGauge({ score, reliabilityLevel, size = 200 }: { score: number; reliabilityLevel: ReliabilityLevel; size?: number }) {
   const r = size * 0.39;
   const cx = size / 2;
   const cy = size * 0.52;
   const circ = Math.PI * r;
-  const offset = circ * (1 - score / 100);
-  const col = scoreColor(score);
-  const lbl = scoreLabel(score);
+  const offset = circ * (1 - Math.min(Math.max(score, 0), 100) / 100);
+  const col = reliabilityColor(reliabilityLevel);
+  const lbl = reliabilityLevel;
   const path = `M ${cx - r} ${cy} A ${r} ${r} 0 0 1 ${cx + r} ${cy}`;
   return (
     <svg width={size} height={size * 0.62} viewBox={`0 0 ${size} ${size * 0.62}`}>
@@ -186,10 +225,67 @@ function CompBar({ label, score, icon: Icon }: { label: string; score: number; i
           <Icon size={12} className="text-slate-400" />
           <span className="text-[12px] font-semibold text-slate-600">{label}</span>
         </div>
-        <span className="text-[12px] font-bold" style={{ color: col }}>{score}</span>
+        <span className="text-[12px] font-bold" style={{ color: col }}>{score}<span className="font-medium text-slate-400">/100</span></span>
       </div>
       <div className="h-1.5 bg-slate-100 rounded-full overflow-hidden">
-        <div className="h-full rounded-full" style={{ width: `${score}%`, backgroundColor: col }} />
+        <div className="h-full rounded-full" style={{ width: `${Math.min(Math.max(score, 0), 100)}%`, backgroundColor: col }} />
+      </div>
+    </div>
+  );
+}
+
+const INDICATOR_META: { key: keyof FrieIndicators; label: string; icon: React.ElementType }[] = [
+  { key: "incomeStability",     label: "Income Stability",     icon: TrendingUp },
+  { key: "savingsDiscipline",   label: "Savings Discipline",   icon: DollarSign },
+  { key: "debtBurden",          label: "Debt Burden",          icon: AlertTriangle },
+  { key: "commitmentAdherence", label: "Commitment Adherence", icon: Shield },
+  { key: "cashflowStability",   label: "Cash-flow Stability",  icon: Activity },
+  { key: "paymentDiscipline",   label: "Payment Discipline",   icon: CheckCircle },
+  { key: "financialStress",     label: "Financial Stress",     icon: Heart },
+  { key: "financialResilience", label: "Financial Resilience", icon: BarChart2 },
+];
+
+function IndicatorBreakdown({ state }: { state: PrototypeFrieScoreState }) {
+  if (state.status === "loading" || state.status === "idle") {
+    return (
+      <div className="bg-white rounded-xl border border-[#F1F5F9] p-6">
+        <h3 className="text-[14px] font-bold text-[#0F172A] mb-4">FRIE Indicator Breakdown</h3>
+        <div className="grid grid-cols-2 gap-x-8 gap-y-4">
+          {Array.from({ length: 8 }).map((_, i) => (
+            <div key={i} className="flex flex-col gap-1.5">
+              <div className="h-3 rounded bg-slate-100 animate-pulse w-2/3" />
+              <div className="h-1.5 bg-slate-100 rounded-full overflow-hidden">
+                <div className="h-full w-1/3 bg-slate-200 rounded-full animate-pulse" />
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  }
+  if (state.status === "error" || !state.indicators) {
+    return (
+      <div className="bg-white rounded-xl border border-[#F1F5F9] p-6">
+        <h3 className="text-[14px] font-bold text-[#0F172A] mb-2">FRIE Indicator Breakdown</h3>
+        <p className="text-[13px] text-slate-500">Indicator breakdown unavailable</p>
+      </div>
+    );
+  }
+  const indicators = state.indicators;
+  return (
+    <div className="bg-white rounded-xl border border-[#F1F5F9] p-6">
+      <h3 className="text-[14px] font-bold text-[#0F172A]">FRIE Indicator Breakdown</h3>
+      <p className="text-[12px] text-slate-500 mt-1 mb-4">
+        Derived from selected dataset record — FRIE scoring-engine indicators. The FRIE Score above is the V2 XGBoost prediction.
+      </p>
+      <div className="grid grid-cols-2 gap-x-8 gap-y-4">
+        {[INDICATOR_META.slice(0, 4), INDICATOR_META.slice(4)].map((column, ci) => (
+          <div key={ci} className="flex flex-col gap-4">
+            {column.map(({ key, label, icon }) => (
+              <CompBar key={key} label={label} score={Math.round(indicators[key])} icon={icon} />
+            ))}
+          </div>
+        ))}
       </div>
     </div>
   );
@@ -238,19 +334,11 @@ function Toggle({ checked, onChange }: { checked: boolean; onChange: () => void 
 // LOGIN PAGE
 // ═══════════════════════════════════════════════════════════════
 
-const ROLE_TYPES: { role: Role; label: string; pathKey: keyof typeof svgPaths; clip: boolean }[] = [
-  { role: "individual", label: "Individual", pathKey: "p1f01eb00", clip: true },
-  { role: "bank",       label: "Bank",       pathKey: "p3ddcec80", clip: false },
-  { role: "nbfc",       label: "NBFC",       pathKey: "pbaa4a00",  clip: true },
-  { role: "insurance",  label: "Insurance",  pathKey: "p493b700",  clip: true },
-];
-
 function LoginPage({ onLogin }: { onLogin: (user: AuthUser) => void }) {
   const [email, setEmail]             = useState("");
   const [password, setPassword]       = useState("");
   const [showPw, setShowPw]           = useState(false);
   const [remember, setRemember]       = useState(false);
-  const [selectedType, setSelectedType] = useState<Role>("individual");
   const [error, setError]             = useState("");
 
   function handleSignIn(e: React.FormEvent) {
@@ -259,7 +347,7 @@ function LoginPage({ onLogin }: { onLogin: (user: AuthUser) => void }) {
     const key = email.toLowerCase().trim();
     const account = DEMO_ACCOUNTS[key];
     if (!account || account.password !== password) {
-      setError("Invalid credentials. Use the demo accounts listed below.");
+      setError("Invalid credentials. Use the Individual demo account below.");
       return;
     }
     onLogin({ email: key, role: account.role, name: account.name });
@@ -267,9 +355,6 @@ function LoginPage({ onLogin }: { onLogin: (user: AuthUser) => void }) {
 
   const hints: { email: string; label: string }[] = [
     { email: "individual@frie.demo", label: "Individual" },
-    { email: "bank@frie.demo",       label: "Bank" },
-    { email: "nbfc@frie.demo",       label: "NBFC" },
-    { email: "insurance@frie.demo",  label: "Insurance" },
   ];
 
   return (
@@ -299,15 +384,15 @@ function LoginPage({ onLogin }: { onLogin: (user: AuthUser) => void }) {
               Know your financial<br />reliability score.
             </h2>
             <p className="text-slate-400 text-[14px] mt-3 leading-relaxed">
-              AI-driven analysis of financial behaviour, documents, and credit patterns — consolidated into a single reliability index.
+              Prototype scoring of dataset-backed financial records through the saved FRIE XGBoost pipeline — consolidated into a single reliability index.
             </p>
           </div>
 
           <div className="space-y-4">
             {[
               { icon: Zap,      title: "FRIE Score",         desc: "Composite reliability index from 0–100" },
-              { icon: Shield,   title: "Bank-grade Security", desc: "End-to-end encrypted document processing" },
-              { icon: Activity, title: "Instant Analysis",   desc: "Documents scored and verified in seconds" },
+              { icon: Shield,   title: "Dataset-backed Prototype", desc: "Scores computed from local FRIE ML test records" },
+              { icon: Activity, title: "Backend Prediction", desc: "Scores returned by the FRIE FastAPI service" },
             ].map(({ icon: Icon, title, desc }) => (
               <div key={title} className="flex items-start gap-3">
                 <div className="w-8 h-8 rounded-lg bg-blue-500/20 flex items-center justify-center shrink-0 mt-0.5">
@@ -322,7 +407,7 @@ function LoginPage({ onLogin }: { onLogin: (user: AuthUser) => void }) {
           </div>
 
           <div className="grid grid-cols-3 gap-4 pt-5 border-t border-slate-800">
-            {[{ val: "50K+", lbl: "Users" }, { val: "98%", lbl: "Accuracy" }, { val: "24/7", lbl: "Monitoring" }].map(({ val, lbl }) => (
+            {[{ val: "98", lbl: "Model Features" }, { val: "V2", lbl: "XGBoost Pipeline" }, { val: "S3", lbl: "Prototype Demo" }].map(({ val, lbl }) => (
               <div key={lbl} className="text-center">
                 <p className="text-white text-[18px] font-extrabold" style={{ fontFamily: "Outfit, sans-serif" }}>{val}</p>
                 <p className="text-slate-500 text-[11px]">{lbl}</p>
@@ -491,7 +576,7 @@ function LoginPage({ onLogin }: { onLogin: (user: AuthUser) => void }) {
           {/* Demo hint */}
           <div className="bg-[#F8FAFC] border border-[#F1F5F9] rounded-lg p-3">
             <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-2">Demo Credentials</p>
-            <div className="grid grid-cols-2 gap-1.5">
+            <div className="flex flex-col gap-1.5">
               {hints.map(({ email: hEmail, label }) => (
                 <button
                   key={hEmail}
@@ -499,49 +584,12 @@ function LoginPage({ onLogin }: { onLogin: (user: AuthUser) => void }) {
                   onClick={() => { setEmail(hEmail); setPassword("FRIE123"); setError(""); }}
                   className="text-left text-[11px] text-[#3B82F6] hover:text-blue-700 font-medium transition-colors"
                 >
-                  {label}: {hEmail.split("@")[0]}
+                  {label}: {hEmail} / FRIE123
                 </button>
               ))}
             </div>
           </div>
         </form>
-
-        {/* User type selector (bottom) */}
-        <div className="w-full max-w-[400px] flex flex-col gap-4 mt-8">
-          <p className="font-bold text-[#94A3B8] text-[12px] text-center uppercase tracking-widest" style={{ fontFamily: "Geist, Inter, sans-serif" }}>
-            Select Active User Register
-          </p>
-          <div className="flex gap-2">
-            {ROLE_TYPES.map(({ role, label, pathKey, clip }) => (
-              <button
-                key={role}
-                type="button"
-                onClick={() => setSelectedType(role)}
-                className={`flex-1 flex items-center justify-center gap-1.5 px-2 py-2 rounded-[8px] transition-all ${
-                  selectedType === role
-                    ? "bg-[#0F172A] text-white"
-                    : "bg-[#F8FAFC] border border-[#F1F5F9] text-[#334155] hover:bg-slate-100"
-                }`}
-              >
-                <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-                  {clip ? (
-                    <>
-                      <g clipPath={`url(#clip-${role})`}>
-                        <path d={svgPaths[pathKey]} stroke={selectedType === role ? "white" : "#334155"} strokeLinecap="round" strokeWidth="2" />
-                      </g>
-                      <defs><clipPath id={`clip-${role}`}><rect fill="white" height="12" width="12" /></clipPath></defs>
-                    </>
-                  ) : (
-                    <path d={svgPaths[pathKey]} stroke={selectedType === role ? "white" : "#334155"} strokeLinecap="round" strokeWidth="2" />
-                  )}
-                </svg>
-                <span className="text-[12px] font-semibold" style={{ fontFamily: "Geist, Inter, sans-serif" }}>
-                  {label}
-                </span>
-              </button>
-            ))}
-          </div>
-        </div>
       </div>
     </div>
   );
@@ -557,10 +605,8 @@ const NAV_BY_ROLE: Record<Role, NavItem[]> = {
   individual: [
     { icon: LayoutDashboard, label: "Dashboard",         view: "dashboard" },
     { icon: Star,            label: "FRIE Score",        view: "score" },
-    { icon: FileText,        label: "Documents",         view: "documents" },
     { icon: TrendingUp,      label: "Financial Analysis",view: "analysis" },
-    { icon: MessageSquare,   label: "Recommendations",   view: "recommendations" },
-    { icon: Clock,           label: "History",           view: "history" },
+    { icon: Users,           label: "Switch Customer",   view: "select-customer" },
   ],
   bank: [
     { icon: LayoutDashboard, label: "Dashboard",  view: "dashboard" },
@@ -598,11 +644,6 @@ function Sidebar({ role, view, onNavigate, onLogout, userName }: {
   role: Role; view: View; onNavigate: (v: View) => void; onLogout: () => void; userName: string;
 }) {
   const nav = NAV_BY_ROLE[role];
-  const commonBottom: NavItem[] = [
-    { icon: User,        label: "Profile",       view: "profile" },
-    { icon: Settings,    label: "Settings",      view: "settings" },
-    { icon: Bell,        label: "Notifications", view: "notifications" },
-  ];
 
   function NavBtn({ item }: { item: NavItem }) {
     const active = view === item.view;
@@ -638,18 +679,6 @@ function Sidebar({ role, view, onNavigate, onLogout, userName }: {
       <nav className="flex-1 px-3 py-3 overflow-y-auto">
         <p className="px-3 mb-2 text-[10px] font-bold text-slate-300 uppercase tracking-widest">Main Menu</p>
         {nav.map(item => <NavBtn key={item.view} item={item} />)}
-
-        <div className="my-3 border-t border-[#F1F5F9]" />
-        <p className="px-3 mb-2 text-[10px] font-bold text-slate-300 uppercase tracking-widest">Account</p>
-        {commonBottom.map(item => <NavBtn key={item.view} item={item} />)}
-
-        <button
-          onClick={() => {}}
-          className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-left text-slate-500 hover:bg-slate-50 hover:text-[#0F172A] transition-all mb-0.5"
-        >
-          <HelpCircle size={15} />
-          <span className="text-[13px] font-semibold">Help & Support</span>
-        </button>
       </nav>
 
       {/* User + logout */}
@@ -697,17 +726,17 @@ function AppLayout({ role, view, onNavigate, onLogout, userName, children }: {
           </div>
           <div className="flex items-center gap-3">
             <button
-              onClick={() => onNavigate("notifications")}
-              className="w-9 h-9 bg-[#F8FAFC] border border-[#F1F5F9] rounded-lg flex items-center justify-center hover:bg-slate-50 transition-colors"
+              onClick={() => onNavigate("select-customer")}
+              className="h-9 px-4 bg-[#F8FAFC] border border-[#F1F5F9] rounded-lg flex items-center gap-2 hover:bg-slate-50 transition-colors text-[13px] font-semibold text-[#0F172A]"
             >
-              <Bell size={16} className="text-slate-500" />
+              <Users size={15} className="text-slate-500" />
+              Switch Customer
             </button>
-            <button
-              onClick={() => onNavigate("profile")}
+            <div
               className="w-9 h-9 rounded-full bg-[#0F172A] flex items-center justify-center text-white text-[13px] font-bold"
             >
               {userName.charAt(0).toUpperCase()}
-            </button>
+            </div>
           </div>
         </div>
         {/* Main content */}
@@ -720,27 +749,187 @@ function AppLayout({ role, view, onNavigate, onLogout, userName, children }: {
 }
 
 // ═══════════════════════════════════════════════════════════════
+// CUSTOMER SELECTOR (dataset-backed prototype records)
+// ═══════════════════════════════════════════════════════════════
+
+function CustomerSelector({ selectedId, onSelect }: {
+  selectedId: string | null;
+  onSelect: (sampleId: string) => void;
+}) {
+  const [records, setRecords] = useState<DevSampleMeta[] | null>(null);
+  const [error, setError]     = useState("");
+
+  useEffect(() => {
+    let live = true;
+    setError("");
+    listDevSampleRecords()
+      .then(list => { if (live) setRecords(list); })
+      .catch(err => {
+        if (!live) return;
+        setRecords([]);
+        setError(err instanceof Error && err.message.trim() ? err.message : "Unable to load prototype customers.");
+      });
+    return () => { live = false; };
+  }, []);
+
+  return (
+    <div className="space-y-6 max-w-4xl">
+      <div className="bg-white rounded-xl border border-[#F1F5F9] p-8">
+        <p className="text-[11px] font-bold text-slate-400 uppercase tracking-widest mb-1">FRIE Individual Portal</p>
+        <h2 className="text-[24px] font-extrabold text-[#0F172A]" style={{ fontFamily: "Outfit, sans-serif" }}>
+          Select a prototype customer
+        </h2>
+        <p className="text-[13px] text-slate-500 mt-1.5">
+          Dataset-backed prototype — only complete local FRIE ML test records with all 98 model features are listed.
+        </p>
+
+        {records === null && !error && (
+          <div className="flex items-center gap-3 mt-6">
+            <div className="w-5 h-5 border-2 border-[#0F172A] border-t-transparent rounded-full animate-spin" />
+            <p className="text-[13px] font-semibold text-slate-600">Loading prototype customers...</p>
+          </div>
+        )}
+
+        {error && (
+          <div className="flex items-start gap-2.5 bg-red-50 border border-red-100 rounded-lg px-3 py-2.5 mt-6">
+            <AlertCircle size={14} className="text-red-500 shrink-0 mt-0.5" />
+            <p className="text-red-600 text-[13px]">{error}</p>
+          </div>
+        )}
+
+        {records !== null && !error && records.length === 0 && (
+          <p className="text-[13px] text-slate-500 mt-6">No complete prototype records are available.</p>
+        )}
+
+        {records !== null && !error && records.length > 0 && (
+          <div className="mt-6">
+            <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-3">
+              {records.length} complete record{records.length === 1 ? "" : "s"} available
+            </p>
+            <div className="grid grid-cols-2 gap-3">
+              {records.map(record => {
+                const active = selectedId === record.sampleId;
+                return (
+                  <button
+                    key={record.sampleId}
+                    onClick={() => onSelect(record.sampleId)}
+                    className={`text-left rounded-xl border p-4 transition-all ${
+                      active
+                        ? "bg-[#0F172A] text-white border-[#0F172A]"
+                        : "bg-white text-[#0F172A] border-[#F1F5F9] hover:border-blue-200 hover:bg-blue-50/40"
+                    }`}
+                  >
+                    <div className="flex items-center justify-between">
+                      <p className="text-[13px] font-bold" style={{ fontFamily: "Outfit, sans-serif" }}>
+                        {record.sampleId.replace("frie-test-record-", "Record ")}
+                      </p>
+                      <ChevronRight size={14} className={active ? "text-white" : "text-slate-300"} />
+                    </div>
+                    <p className={`text-[12px] mt-1 ${active ? "text-slate-300" : "text-slate-500"}`}>
+                      Age {record.age_years === null ? "—" : Math.round(record.age_years)}
+                      {" • "}
+                      Income {record.monthly_income === null ? "—" : fmt(record.monthly_income)}
+                    </p>
+                    <p className={`text-[11px] mt-0.5 ${active ? "text-slate-400" : "text-slate-400"}`}>
+                      {record.occupation ?? "—"}
+                      {" • "}
+                      {record.employment_years === null ? "—" : `${record.employment_years.toFixed(1)} yrs`}
+                    </p>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════
 // INDIVIDUAL DASHBOARD
 // ═══════════════════════════════════════════════════════════════
 
-function IndividualDashboard({ customer, onNavigate }: { customer: Customer; onNavigate: (v: View) => void }) {
+function PrototypeScorePanel({
+  state,
+  size,
+}: {
+  state: PrototypeFrieScoreState;
+  size: number;
+}) {
+  if (state.status === "loading" || state.status === "idle") {
+    return (
+      <div className="flex flex-col items-center justify-center py-8 gap-3 min-h-[180px]">
+        <div className="w-10 h-10 border-4 border-[#0F172A] border-t-transparent rounded-full animate-spin" />
+        <p className="text-[13px] font-semibold text-slate-600">Calculating FRIE Score...</p>
+      </div>
+    );
+  }
+  if (state.status === "error") {
+    return (
+      <div className="flex flex-col items-center justify-center py-8 gap-2 min-h-[180px] text-center px-4">
+        <AlertCircle size={22} className="text-red-500" />
+        <p className="text-[13px] font-semibold text-red-700">Unable to calculate FRIE Score</p>
+        <p className="text-[12px] text-slate-500">{state.message}</p>
+      </div>
+    );
+  }
+  return <ScoreGauge score={state.frieScore} reliabilityLevel={state.reliabilityLevel} size={size} />;
+}
+
+function IndividualDashboard({
+  features,
+  sampleId,
+  onNavigate,
+  prototypeScore,
+}: {
+  features: CustomerFeatureMap | null;
+  sampleId: string | null;
+  onNavigate: (v: View) => void;
+  prototypeScore: PrototypeFrieScoreState;
+}) {
+  const ready = prototypeScore.status === "ready";
+  const dti = featureNumber(features, "current_dti");
+  const age = featureNumber(features, "age_years");
+  const occupation = features && typeof features["occupation"] === "string" ? features["occupation"] as string : null;
   return (
     <div className="space-y-6">
+      <div className="flex items-center gap-2">
+        <span className="text-[11px] font-semibold px-2.5 py-1 rounded-full bg-[#0F172A] text-white">
+          Dataset-backed prototype
+        </span>
+        <span className="text-[11px] font-semibold px-2.5 py-1 rounded-full bg-white border border-[#F1F5F9] text-slate-500">
+          Prediction generated by FRIE XGBoost
+        </span>
+      </div>
       {/* Row 1: Score + stats */}
       <div className="grid grid-cols-3 gap-5">
         <div className="bg-white rounded-xl border border-[#F1F5F9] p-6 flex flex-col items-center">
           <p className="text-[11px] font-bold text-slate-400 uppercase tracking-widest mb-1">Your FRIE Score</p>
-          <ScoreGauge score={customer.frieScore} size={185} />
+          {sampleId && (
+            <p className="text-[11px] text-slate-400 mb-1">
+              {sampleId.replace("frie-test-record-", "Record ")}
+              {age !== null && ` • Age ${Math.round(age)}`}
+              {occupation && ` • ${occupation}`}
+            </p>
+          )}
+          <PrototypeScorePanel state={prototypeScore} size={185} />
           <div className="flex items-center gap-5 mt-2 w-full justify-center">
             <div className="text-center">
-              <p className="text-[10px] text-slate-400 uppercase tracking-wider">Confidence</p>
-              <p className="text-[17px] font-extrabold text-[#0F172A]" style={{ fontFamily: "Outfit, sans-serif" }}>{customer.confidence}%</p>
+              <p className="text-[10px] text-slate-400 uppercase tracking-wider">Savings Rate</p>
+              <p className="text-[17px] font-extrabold text-[#0F172A]" style={{ fontFamily: "Outfit, sans-serif" }}>{pctFeature(features, "savings_rate")}</p>
             </div>
             <div className="w-px h-8 bg-[#F1F5F9]" />
             <div className="text-center">
               <p className="text-[10px] text-slate-400 uppercase tracking-wider">Category</p>
-              <p className="text-[15px] font-extrabold" style={{ fontFamily: "Outfit, sans-serif", color: scoreColor(customer.frieScore) }}>
-                {scoreLabel(customer.frieScore)}
+              <p
+                className="text-[15px] font-extrabold"
+                style={{
+                  fontFamily: "Outfit, sans-serif",
+                  color: ready ? reliabilityColor(prototypeScore.reliabilityLevel) : "#94A3B8",
+                }}
+              >
+                {ready ? prototypeScore.reliabilityLevel : "—"}
               </p>
             </div>
           </div>
@@ -752,94 +941,36 @@ function IndividualDashboard({ customer, onNavigate }: { customer: Customer; onN
           </button>
         </div>
 
-        <div className="col-span-2 grid grid-cols-2 gap-4">
-          <Stat title="Monthly Income"  value={fmt(customer.monthlyIncome)}  sub="Per month"                       icon={DollarSign}  variant="green" />
-          <Stat title="Monthly Savings" value={fmt(customer.savings)}         sub={`${customer.savingsRate.toFixed(1)}% of income`} icon={TrendingUp}  variant="blue"  />
-          <Stat title="CIBIL Score"     value={customer.creditScore.toString()} sub="Credit rating"                icon={CreditCard}  variant="amber" />
-          <Stat title="Total Debt"      value={fmt(customer.existingDebt)}    sub={`${fmt(customer.emi)} EMI/mo`} icon={AlertTriangle} variant="red"   />
-        </div>
-      </div>
-
-      {/* Row 2: Components + trend */}
-      <div className="grid grid-cols-5 gap-5">
-        <div className="col-span-3 bg-white rounded-xl border border-[#F1F5F9] p-6">
-          <div className="flex items-center justify-between mb-4">
-            <h3 className="text-[14px] font-bold text-[#0F172A]">Score Components</h3>
-            <button onClick={() => onNavigate("score")} className="text-[12px] font-semibold text-[#3B82F6] hover:text-blue-700 flex items-center gap-1">
-              Details <ChevronRight size={12} />
-            </button>
-          </div>
-          <div className="grid grid-cols-2 gap-x-8 gap-y-4">
-            {Object.entries(customer.components).map(([k, v]) => {
-              const meta = COMP_META[k];
-              return meta ? <CompBar key={k} label={meta.label} score={v} icon={meta.icon} /> : null;
-            })}
-          </div>
-        </div>
-
-        <div className="col-span-2 bg-white rounded-xl border border-[#F1F5F9] p-6">
-          <h3 className="text-[14px] font-bold text-[#0F172A] mb-4">Score Trend</h3>
-          <ResponsiveContainer width="100%" height={185}>
-            <AreaChart data={SCORE_HISTORY}>
-              <defs>
-                <linearGradient id="sg1" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%"  stopColor="#3B82F6" stopOpacity={0.15} />
-                  <stop offset="95%" stopColor="#3B82F6" stopOpacity={0}    />
-                </linearGradient>
-              </defs>
-              <CartesianGrid strokeDasharray="3 3" stroke="#F1F5F9" />
-              <XAxis dataKey="month" tick={{ fontSize: 11, fill: "#94A3B8" }} axisLine={false} tickLine={false} />
-              <YAxis domain={[60, 100]} tick={{ fontSize: 11, fill: "#94A3B8" }} axisLine={false} tickLine={false} width={28} />
-              <Tooltip contentStyle={{ fontSize: 12, border: "1px solid #F1F5F9", borderRadius: 8, boxShadow: "none" }} />
-              <Area type="monotone" dataKey="score" stroke="#3B82F6" strokeWidth={2} fill="url(#sg1)" dot={{ fill: "#3B82F6", r: 3 }} />
-            </AreaChart>
-          </ResponsiveContainer>
-        </div>
-      </div>
-
-      {/* Row 3: Activity + Recommendations */}
-      <div className="grid grid-cols-2 gap-5">
-        <div className="bg-white rounded-xl border border-[#F1F5F9] p-6">
-          <h3 className="text-[14px] font-bold text-[#0F172A] mb-4">Recent Activity</h3>
-          <div className="space-y-3">
-            {[
-              { label: "FRIE Score Updated to 82", time: "2 hours ago",  bg: "bg-blue-50",     ic: <Star size={14} className="text-blue-500" /> },
-              { label: "Bank Statement Verified",   time: "Yesterday",    bg: "bg-emerald-50",  ic: <CheckCircle size={14} className="text-emerald-500" /> },
-              { label: "Credit Report Analyzed",    time: "2 days ago",   bg: "bg-blue-50",     ic: <Activity size={14} className="text-blue-500" /> },
-              { label: "5 Documents Uploaded",      time: "3 days ago",   bg: "bg-slate-100",   ic: <Upload size={14} className="text-slate-500" /> },
-            ].map(({ label, time, bg, ic }) => (
-              <div key={label} className="flex items-center gap-3">
-                <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${bg}`}>{ic}</div>
-                <div className="flex-1">
-                  <p className="text-[13px] font-semibold text-[#0F172A]">{label}</p>
-                  <p className="text-[11px] text-slate-400">{time}</p>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        <div className="bg-white rounded-xl border border-[#F1F5F9] p-6">
-          <div className="flex items-center justify-between mb-4">
-            <h3 className="text-[14px] font-bold text-[#0F172A]">Recommendations</h3>
-            <button onClick={() => onNavigate("recommendations")} className="text-[12px] font-semibold text-[#3B82F6] hover:text-blue-700 transition-colors">
-              View All
-            </button>
-          </div>
-          <div className="space-y-3">
-            {[
-              { text: "Increase insurance coverage to improve resilience score by +8 pts", dot: "bg-red-400" },
-              { text: "Start a ₹5,000/month SIP to enhance investment behaviour score",    dot: "bg-amber-400" },
-              { text: "Maintain current payment discipline — 90/100 streak active",        dot: "bg-emerald-400" },
-            ].map(({ text, dot }) => (
-              <div key={text} className="flex items-start gap-3 p-3 bg-[#F8FAFC] rounded-lg">
-                <div className={`w-2 h-2 rounded-full mt-1.5 shrink-0 ${dot}`} />
-                <p className="text-[12px] text-slate-600 leading-relaxed">{text}</p>
-              </div>
-            ))}
+        <div className="col-span-2 flex flex-col gap-2">
+          <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">Financial Snapshot — dataset record values</p>
+          <div className="grid grid-cols-3 gap-4">
+            <Stat title="Monthly Income"  value={fmtFeature(features, "monthly_income")}  sub="Dataset feature" icon={DollarSign} variant="green" />
+            <Stat title="Monthly Savings" value={fmtFeature(features, "monthly_savings")} sub={`${pctFeature(features, "savings_rate")} of income`} icon={TrendingUp} variant="blue" />
+            <Stat title="Savings Rate"    value={pctFeature(features, "savings_rate")}    sub="Dataset feature" icon={Percent} variant="green" />
+            <Stat title="Employment"      value={yearsFeature(features, "employment_years")} sub="Dataset feature" icon={Briefcase} variant="amber" />
+            <Stat title="Bureau Debt"     value={fmtFeature(features, "bureau_debt_amount")} sub={dti === null ? "Dataset feature" : `Debt-to-income ${dti.toFixed(2)}`} icon={AlertTriangle} variant="red" />
+            <Stat title="Current DTI"     value={decimalFeature(features, "current_dti")} sub="Dataset feature" icon={Activity} variant="red" />
           </div>
         </div>
       </div>
+
+      {/* Additional financial indicators */}
+      <div className="bg-white rounded-xl border border-[#F1F5F9] p-6">
+        <h3 className="text-[14px] font-bold text-[#0F172A] mb-4">Additional Financial Indicators</h3>
+        <div className="grid grid-cols-4 gap-4">
+          <Stat title="Total Expenses"    value={fmtFeature(features, "synthetic_total_expense")} sub="Dataset feature" icon={TrendingDown} variant="red" />
+          <Stat title="Total EMI"         value={fmtFeature(features, "synthetic_total_emi")}     sub="Dataset feature" icon={CreditCard} variant="amber" />
+          <Stat title="Available Surplus" value={fmtFeature(features, "available_surplus")}       sub="Dataset feature" icon={BarChart2} variant="blue" />
+          <Stat title="Savings Balance"   value={fmtFeature(features, "savings_balance")}         sub="Dataset feature" icon={DollarSign} variant="green" />
+          <Stat title="UPI Spending"      value={fmtFeature(features, "upi_spending")}            sub="Dataset feature" icon={Zap} variant="blue" />
+          <Stat title="Insurance Premium" value={fmtFeature(features, "insurance_premium")}       sub="Dataset feature" icon={Shield} variant="amber" />
+          <Stat title="SIP Contribution"  value={fmtFeature(features, "sip_contribution")}        sub="Dataset feature" icon={TrendingUp} variant="green" />
+          <Stat title="Mutual Fund Balance" value={fmtFeature(features, "mutual_fund_balance")}   sub="Dataset feature" icon={BarChart2} variant="blue" />
+        </div>
+      </div>
+
+      {/* FRIE Indicator Breakdown */}
+      <IndicatorBreakdown state={prototypeScore} />
     </div>
   );
 }
@@ -974,12 +1105,12 @@ function DocumentUpload({ onAnalyze }: { onAnalyze: () => void }) {
 // FINANCIAL ANALYSIS
 // ═══════════════════════════════════════════════════════════════
 
-function FinancialAnalysis({ customer, onViewScore }: { customer: Customer; onViewScore: () => void }) {
+function FinancialAnalysis({ features, onViewScore }: { features: CustomerFeatureMap | null; onViewScore: () => void }) {
   const [phase, setPhase] = useState<"processing" | "done">("processing");
   const [step, setStep]   = useState(0);
 
   const steps = [
-    "Extracting document data...",
+    "Loading dataset record...",
     "Calculating income metrics...",
     "Analyzing credit behaviour...",
     "Computing FRIE Score...",
@@ -998,12 +1129,12 @@ function FinancialAnalysis({ customer, onViewScore }: { customer: Customer; onVi
     return (
       <div className="flex flex-col items-center justify-center min-h-[440px] bg-white rounded-xl border border-[#F1F5F9] p-12">
         <div className="w-14 h-14 border-4 border-[#0F172A] border-t-transparent rounded-full animate-spin mb-6" />
-        <h2 className="text-[20px] font-extrabold text-[#0F172A] mb-2" style={{ fontFamily: "Outfit, sans-serif" }}>
-          Analyzing Your Financials
-        </h2>
-        <p className="text-[14px] text-slate-500 text-center max-w-md">
-          Processing your documents and calculating financial metrics.
-        </p>
+          <h2 className="text-[20px] font-extrabold text-[#0F172A] mb-2" style={{ fontFamily: "Outfit, sans-serif" }}>
+            Analyzing Your Financials
+          </h2>
+          <p className="text-[14px] text-slate-500 text-center max-w-md">
+            Processing the selected dataset record and calculating financial metrics.
+          </p>
         <div className="mt-8 w-64 space-y-3">
           {steps.map((s, i) => (
             <div key={s} className="flex items-center gap-2.5">
@@ -1025,14 +1156,21 @@ function FinancialAnalysis({ customer, onViewScore }: { customer: Customer; onVi
   }
 
   const metrics: { label: string; value: string; icon: React.ElementType; variant: string }[] = [
-    { label: "Monthly Income",     value: fmt(customer.monthlyIncome),           icon: DollarSign,   variant: "green" },
-    { label: "Monthly Expenses",   value: fmt(customer.monthlyExpenses),          icon: TrendingDown, variant: "red"   },
-    { label: "Monthly Savings",    value: fmt(customer.savings),                  icon: TrendingUp,   variant: "blue"  },
-    { label: "Existing Debt",      value: fmt(customer.existingDebt),             icon: AlertTriangle,variant: "amber" },
-    { label: "Monthly EMI",        value: fmt(customer.emi),                      icon: CreditCard,   variant: "amber" },
-    { label: "Credit Score",       value: customer.creditScore.toString(),         icon: BarChart2,    variant: "blue"  },
-    { label: "Savings Rate",       value: `${customer.savingsRate.toFixed(1)}%`,   icon: Percent,      variant: "green" },
-    { label: "Debt-to-Income",     value: `${customer.debtToIncome.toFixed(2)}x`,  icon: Activity,     variant: "red"   },
+    { label: "Monthly Income",     value: fmtFeature(features, "monthly_income"),        icon: DollarSign,   variant: "green" },
+    { label: "Monthly Expenses",   value: fmtFeature(features, "synthetic_total_expense"), icon: TrendingDown, variant: "red"   },
+    { label: "Monthly Savings",    value: fmtFeature(features, "monthly_savings"),       icon: TrendingUp,   variant: "blue"  },
+    { label: "Savings Balance",    value: fmtFeature(features, "savings_balance"),       icon: CreditCard,   variant: "amber" },
+    { label: "Monthly EMI",        value: fmtFeature(features, "current_loan_annuity"),  icon: CreditCard,   variant: "amber" },
+    { label: "Available Surplus",  value: fmtFeature(features, "available_surplus"),     icon: BarChart2,    variant: "blue"  },
+    { label: "Savings Rate",       value: pctFeature(features, "savings_rate"),          icon: Percent,      variant: "green" },
+    { label: "Debt-to-Income",     value: decimalFeature(features, "current_dti"),       icon: Activity,     variant: "red"   },
+  ];
+
+  const monthlyChartData = [
+    { name: "Income",   value: Math.round((featureNumber(features, "monthly_income") ?? 0) / 1000),          fill: "#10B981" },
+    { name: "Expenses", value: Math.round((featureNumber(features, "synthetic_total_expense") ?? 0) / 1000), fill: "#EF4444" },
+    { name: "Savings",  value: Math.round((featureNumber(features, "monthly_savings") ?? 0) / 1000),         fill: "#3B82F6" },
+    { name: "EMI",      value: Math.round((featureNumber(features, "current_loan_annuity") ?? 0) / 1000),    fill: "#F59E0B" },
   ];
 
   return (
@@ -1054,13 +1192,13 @@ function FinancialAnalysis({ customer, onViewScore }: { customer: Customer; onVi
       <div className="bg-white rounded-xl border border-[#F1F5F9] p-6">
         <h3 className="text-[14px] font-bold text-[#0F172A] mb-4">Monthly Financial Breakdown</h3>
         <ResponsiveContainer width="100%" height={200}>
-          <BarChart data={MONTHLY_CHART_DATA} barSize={44}>
+          <BarChart data={monthlyChartData} barSize={44}>
             <CartesianGrid strokeDasharray="3 3" stroke="#F1F5F9" />
             <XAxis dataKey="name" tick={{ fontSize: 12, fill: "#94A3B8" }} axisLine={false} tickLine={false} />
             <YAxis tick={{ fontSize: 11, fill: "#94A3B8" }} axisLine={false} tickLine={false} tickFormatter={v => `₹${v}K`} />
             <Tooltip formatter={(v: number) => [`₹${v}K`, ""]} contentStyle={{ fontSize: 12, border: "1px solid #F1F5F9", borderRadius: 8, boxShadow: "none" }} />
             <Bar dataKey="value" radius={[6, 6, 0, 0]}>
-              {MONTHLY_CHART_DATA.map((entry, i) => (
+              {monthlyChartData.map((entry, i) => (
                 <Cell key={`cell-${i}`} fill={entry.fill} />
               ))}
             </Bar>
@@ -1071,7 +1209,7 @@ function FinancialAnalysis({ customer, onViewScore }: { customer: Customer; onVi
       <div className="bg-[#F8FAFC] border border-[#F1F5F9] rounded-xl p-4 flex items-start gap-3">
         <Info size={15} className="text-slate-400 mt-0.5 shrink-0" />
         <p className="text-[12px] text-slate-500">
-          DEMO MODE: This analysis uses synthetic data for prototype purposes. FRIE production analysis uses verified financial documents and a proprietary ML model.
+          Prototype: Financial metrics are sourced from the local FRIE ML test record. The FRIE Score itself is produced by the saved research XGBoost pipeline for demonstration purposes and is not an externally validated real-world assessment.
         </p>
       </div>
 
@@ -1091,145 +1229,71 @@ function FinancialAnalysis({ customer, onViewScore }: { customer: Customer; onVi
 // FRIE SCORE PAGE
 // ═══════════════════════════════════════════════════════════════
 
-function FRIEScorePage({ customer }: { customer: Customer }) {
-  const positiveFactors = [
-    "Strong payment discipline (90/100) — consistent on-time repayments",
-    "High savings discipline (88/100) — systematic monthly savings behaviour",
-    "Stable income (85/100) — regular salary credits over 12 months",
-    "Credit utilization within optimal 30% range",
-  ];
-  const improvementAreas = [
-    "Low insurance coverage (65/100) — financial resilience underprotected",
-    "Limited investment activity (80/100) — no active SIP detected",
-    "Debt burden (72/100) — existing home loan reduces financial flexibility",
-  ];
-
+function FRIEScorePage({ features, sampleId, prototypeScore }: { features: CustomerFeatureMap | null; sampleId: string | null; prototypeScore: PrototypeFrieScoreState }) {
   return (
     <div className="space-y-6 max-w-4xl">
+      <div className="flex items-center gap-2">
+        <span className="text-[11px] font-semibold px-2.5 py-1 rounded-full bg-[#0F172A] text-white">
+          Dataset-backed prototype
+        </span>
+        <span className="text-[11px] font-semibold px-2.5 py-1 rounded-full bg-white border border-[#F1F5F9] text-slate-500">
+          Prediction generated by FRIE XGBoost
+        </span>
+      </div>
       {/* Score header card */}
       <div className="bg-white rounded-xl border border-[#F1F5F9] p-8 flex items-center gap-8">
-        <ScoreGauge score={customer.frieScore} size={195} />
+        {prototypeScore.status === "ready" ? (
+          <ScoreGauge score={prototypeScore.frieScore} reliabilityLevel={prototypeScore.reliabilityLevel} size={195} />
+        ) : (
+          <PrototypeScorePanel state={prototypeScore} size={195} />
+        )}
         <div className="flex-1">
           <p className="text-[11px] font-bold text-slate-400 uppercase tracking-widest mb-1">FRIE Score</p>
+          {sampleId && (
+            <p className="text-[11px] text-slate-400 mb-1">
+              {sampleId.replace("frie-test-record-", "Prototype customer — record ")}
+            </p>
+          )}
           <p className="text-[52px] font-extrabold text-[#0F172A] leading-none" style={{ fontFamily: "Outfit, sans-serif" }}>
-            {customer.frieScore}
+            {prototypeScore.status === "ready" ? prototypeScore.frieScore : "—"}
           </p>
           <p className="text-[14px] text-slate-500 mt-1.5">Financial Reliability Score — out of 100</p>
           <div className="flex items-center gap-2 mt-3">
-            <span className={`text-[12px] font-semibold px-3 py-1 rounded-full border ${scoreBadgeCls(customer.frieScore)}`}>
-              {scoreLabel(customer.frieScore)}
-            </span>
+            {prototypeScore.status === "ready" ? (
+              <span className={`text-[12px] font-semibold px-3 py-1 rounded-full border ${reliabilityBadgeCls(prototypeScore.reliabilityLevel)}`}>
+                {prototypeScore.reliabilityLevel}
+              </span>
+            ) : prototypeScore.status === "error" ? (
+              <span className="text-[12px] font-semibold px-3 py-1 rounded-full border bg-red-50 text-red-700 border-red-100">
+                Score unavailable
+              </span>
+            ) : (
+              <span className="text-[12px] font-semibold px-3 py-1 rounded-full border bg-slate-50 text-slate-500 border-slate-100">
+                Calculating FRIE Score...
+              </span>
+            )}
           </div>
           <div className="grid grid-cols-3 gap-3 mt-5">
             <div className="bg-[#F8FAFC] rounded-lg p-3 text-center">
-              <p className="text-[10px] text-slate-400 uppercase tracking-wider">Confidence</p>
-              <p className="text-[18px] font-extrabold text-[#0F172A]" style={{ fontFamily: "Outfit, sans-serif" }}>{customer.confidence}%</p>
+              <p className="text-[10px] text-slate-400 uppercase tracking-wider">Savings Rate</p>
+              <p className="text-[18px] font-extrabold text-[#0F172A]" style={{ fontFamily: "Outfit, sans-serif" }}>{pctFeature(features, "savings_rate")}</p>
             </div>
             <div className="bg-[#F8FAFC] rounded-lg p-3 text-center">
-              <p className="text-[10px] text-slate-400 uppercase tracking-wider">Risk Level</p>
-              <p className="text-[18px] font-extrabold" style={{ fontFamily: "Outfit, sans-serif", color: customer.riskLevel === "Low" ? "#10B981" : customer.riskLevel === "Medium" ? "#F59E0B" : "#EF4444" }}>
-                {customer.riskLevel}
-              </p>
+              <p className="text-[10px] text-slate-400 uppercase tracking-wider">Debt-to-Income</p>
+              <p className="text-[18px] font-extrabold text-[#0F172A]" style={{ fontFamily: "Outfit, sans-serif" }}>{decimalFeature(features, "current_dti")}</p>
             </div>
             <div className="bg-[#F8FAFC] rounded-lg p-3 text-center">
-              <p className="text-[10px] text-slate-400 uppercase tracking-wider">Percentile</p>
-              <p className="text-[18px] font-extrabold text-[#0F172A]" style={{ fontFamily: "Outfit, sans-serif" }}>Top 15%</p>
+              <p className="text-[10px] text-slate-400 uppercase tracking-wider">Available Surplus</p>
+              <p className="text-[18px] font-extrabold text-[#0F172A]" style={{ fontFamily: "Outfit, sans-serif" }}>{fmtFeature(features, "available_surplus")}</p>
             </div>
           </div>
         </div>
-      </div>
-
-      {/* Components */}
-      <div className="bg-white rounded-xl border border-[#F1F5F9] p-6">
-        <h3 className="text-[15px] font-bold text-[#0F172A] mb-5">Component Breakdown</h3>
-        <div className="grid grid-cols-2 gap-x-10 gap-y-5">
-          {Object.entries(customer.components).map(([k, v]) => {
-            const meta = COMP_META[k];
-            if (!meta) return null;
-            return (
-              <div key={k}>
-                <div className="flex items-center justify-between mb-1.5">
-                  <div className="flex items-center gap-2">
-                    <meta.icon size={13} className="text-slate-400" />
-                    <span className="text-[13px] font-semibold text-slate-700">{meta.label}</span>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <span className="text-[13px] font-bold" style={{ color: scoreColor(v) }}>{v}/100</span>
-                    {v >= 70
-                      ? <ArrowUp size={11} className="text-emerald-500" />
-                      : <ArrowDown size={11} className="text-red-400" />}
-                  </div>
-                </div>
-                <div className="h-2 bg-slate-100 rounded-full overflow-hidden">
-                  <div className="h-full rounded-full" style={{ width: `${v}%`, backgroundColor: scoreColor(v) }} />
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      </div>
-
-      {/* Factors */}
-      <div className="grid grid-cols-2 gap-5">
-        <div className="bg-white rounded-xl border border-[#F1F5F9] p-5">
-          <div className="flex items-center gap-2 mb-4">
-            <div className="w-7 h-7 bg-emerald-50 rounded-lg flex items-center justify-center">
-              <ArrowUp size={14} className="text-emerald-500" />
-            </div>
-            <h3 className="text-[14px] font-bold text-[#0F172A]">Positive Factors</h3>
-          </div>
-          <div className="space-y-2.5">
-            {positiveFactors.map(f => (
-              <div key={f} className="flex items-start gap-2">
-                <CheckCircle size={13} className="text-emerald-500 mt-0.5 shrink-0" />
-                <p className="text-[12px] text-slate-600">{f}</p>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        <div className="bg-white rounded-xl border border-[#F1F5F9] p-5">
-          <div className="flex items-center gap-2 mb-4">
-            <div className="w-7 h-7 bg-amber-50 rounded-lg flex items-center justify-center">
-              <AlertTriangle size={14} className="text-amber-500" />
-            </div>
-            <h3 className="text-[14px] font-bold text-[#0F172A]">Areas for Improvement</h3>
-          </div>
-          <div className="space-y-2.5">
-            {improvementAreas.map(f => (
-              <div key={f} className="flex items-start gap-2">
-                <AlertCircle size={13} className="text-amber-500 mt-0.5 shrink-0" />
-                <p className="text-[12px] text-slate-600">{f}</p>
-              </div>
-            ))}
-          </div>
-        </div>
-      </div>
-
-      {/* History chart */}
-      <div className="bg-white rounded-xl border border-[#F1F5F9] p-6">
-        <h3 className="text-[15px] font-bold text-[#0F172A] mb-4">Score History</h3>
-        <ResponsiveContainer width="100%" height={160}>
-          <AreaChart data={SCORE_HISTORY}>
-            <defs>
-              <linearGradient id="sg2" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="5%"  stopColor="#3B82F6" stopOpacity={0.12} />
-                <stop offset="95%" stopColor="#3B82F6" stopOpacity={0}    />
-              </linearGradient>
-            </defs>
-            <CartesianGrid strokeDasharray="3 3" stroke="#F1F5F9" />
-            <XAxis dataKey="month" tick={{ fontSize: 11, fill: "#94A3B8" }} axisLine={false} tickLine={false} />
-            <YAxis domain={[60, 100]} tick={{ fontSize: 11, fill: "#94A3B8" }} axisLine={false} tickLine={false} width={28} />
-            <Tooltip contentStyle={{ fontSize: 12, border: "1px solid #F1F5F9", borderRadius: 8, boxShadow: "none" }} />
-            <Area type="monotone" dataKey="score" stroke="#3B82F6" strokeWidth={2} fill="url(#sg2)" dot={{ fill: "#3B82F6", r: 3 }} />
-          </AreaChart>
-        </ResponsiveContainer>
       </div>
 
       <div className="bg-[#F8FAFC] border border-[#F1F5F9] rounded-xl p-4 flex items-start gap-3">
         <Info size={15} className="text-slate-400 mt-0.5 shrink-0" />
         <p className="text-[12px] text-slate-500">
-          DEMO MODE: This FRIE Score is generated by a demonstration algorithm for prototype purposes only. Production FRIE scores are generated by a proprietary financial reliability ML model and are not represented here.
+          Prototype: The FRIE Score and reliability level are produced by the saved research XGBoost pipeline from the selected complete record of the local FRIE ML test dataset. Not an externally validated real-world financial-reliability assessment.
         </p>
       </div>
     </div>
@@ -1850,60 +1914,48 @@ function NotificationsPage() {
 
 export default function App() {
   const [user,             setUser]             = useState<AuthUser | null>(null);
-  const [view,             setView]             = useState<View>("dashboard");
-  const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null);
+  const [view,             setView]             = useState<View>("select-customer");
+  const [selectedSampleId, setSelectedSampleId] = useState<string | null>(null);
+  const prototypeScore = usePrototypeFrieScore(selectedSampleId);
 
   function handleLogin(u: AuthUser) {
     setUser(u);
-    setView("dashboard");
+    setSelectedSampleId(null);
+    setView("select-customer");
   }
   function handleLogout() {
     setUser(null);
-    setView("dashboard");
-    setSelectedCustomer(null);
+    setView("select-customer");
+    setSelectedSampleId(null);
   }
   function navigate(v: View) {
     setView(v);
-    if (v !== "customer-detail") setSelectedCustomer(null);
   }
-  function selectCustomer(c: Customer) {
-    setSelectedCustomer(c);
-    setView("customer-detail");
+  function selectRecord(sampleId: string) {
+    setSelectedSampleId(sampleId);
+    setView("dashboard");
   }
 
   if (!user) return <LoginPage onLogin={handleLogin} />;
 
-  const individual = DEMO_CUSTOMERS[0];
+  const prototypeFeatures = prototypeScore.status === "ready" ? prototypeScore.features : null;
 
   function renderContent(): React.ReactNode {
     if (!user) return null;
     switch (view) {
+      case "select-customer":
+        return <CustomerSelector selectedId={selectedSampleId} onSelect={selectRecord} />;
       case "dashboard":
-        if (user.role === "individual") return <IndividualDashboard customer={individual}  onNavigate={navigate} />;
-        if (user.role === "bank")       return <BankDashboard                              onSelectCustomer={selectCustomer} />;
-        if (user.role === "nbfc")       return <NBFCDashboard                              onSelectCustomer={selectCustomer} />;
-        if (user.role === "insurance")  return <InsuranceDashboard                         onSelectCustomer={selectCustomer} />;
+        if (!selectedSampleId) return <CustomerSelector selectedId={selectedSampleId} onSelect={selectRecord} />;
+        return <IndividualDashboard features={prototypeFeatures} sampleId={selectedSampleId} onNavigate={navigate} prototypeScore={prototypeScore} />;
+      case "score":
+        if (!selectedSampleId) return <CustomerSelector selectedId={selectedSampleId} onSelect={selectRecord} />;
+        return <FRIEScorePage features={prototypeFeatures} sampleId={selectedSampleId} prototypeScore={prototypeScore} />;
+      case "analysis":
+        if (!selectedSampleId) return <CustomerSelector selectedId={selectedSampleId} onSelect={selectRecord} />;
+        return <FinancialAnalysis features={prototypeFeatures} onViewScore={() => navigate("score")} />;
+      default:
         return null;
-      case "score":            return <FRIEScorePage        customer={individual}  />;
-      case "documents":        return <DocumentUpload                              onAnalyze={() => navigate("analysis")} />;
-      case "analysis":         return <FinancialAnalysis    customer={individual}  onViewScore={() => navigate("score")} />;
-      case "recommendations":  return <RecommendationsPage />;
-      case "history":          return <HistoryPage />;
-      case "customers":
-        if (user.role === "bank")      return <BankDashboard      onSelectCustomer={selectCustomer} />;
-        if (user.role === "insurance") return <InsuranceDashboard  onSelectCustomer={selectCustomer} />;
-        return null;
-      case "customer-detail":
-        return selectedCustomer
-          ? <CustomerProfile customer={selectedCustomer} onBack={() => navigate("customers")} />
-          : null;
-      case "applications":     return <NBFCDashboard  onSelectCustomer={selectCustomer} />;
-      case "risk":             return <RiskPage        onSelectCustomer={selectCustomer} />;
-      case "reports":          return <ReportsPage />;
-      case "profile":          return <ProfilePage user={user} />;
-      case "settings":         return <SettingsPage />;
-      case "notifications":    return <NotificationsPage />;
-      default:                 return null;
     }
   }
 
